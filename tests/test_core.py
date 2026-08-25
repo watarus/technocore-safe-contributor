@@ -92,7 +92,9 @@ def test_bootstrap_wires_public_did_signature_payload_to_receipt(
 
     def fake_post(base: str, path: str, payload: dict[str, object], timeout: float) -> Response:
         requests.append((path, payload))
-        return Response(201, {"ok": True})
+        if path == "/r/lobby":
+            return Response(200, {"messages": [{"seq": 42, "ts": "2026-08-25T00:00:00Z"}]})
+        return Response(200, "stored profile")
 
     monkeypatch.setattr(cli, "post_json", fake_post)
     args = cli.parser().parse_args(
@@ -121,6 +123,7 @@ def test_bootstrap_wires_public_did_signature_payload_to_receipt(
     assert isinstance(greeting["sig"], str) and len(greeting["sig"]) == 86
     saved = json.loads(receipt.read_text())
     assert saved["did"] == greeting["did"]
+    assert saved["greeting"]["posted"] == {"seq": 42, "ts": "2026-08-25T00:00:00Z"}
     assert "seed" not in json.dumps(saved).lower()
 
 
@@ -151,6 +154,14 @@ def test_post_json_requires_json_and_does_not_retry(monkeypatch: pytest.MonkeyPa
     assert len(calls) == 1
     assert calls[0].get_header("Accept") == "application/json"
     assert calls[0].get_header("Content-type") == "application/json"
+
+    class TextResponse(FakeResponse):
+        def read(self):
+            return b"stored profile"
+
+    monkeypatch.setattr(core, "urlopen", lambda request, timeout: TextResponse())
+    text_result = core.post_json("https://example.invalid", "/kv/did-aa/key", {"value": "x"}, 1.0)
+    assert text_result.body == "stored profile"
 
     class RedirectResponse(FakeResponse):
         status = 302

@@ -30,10 +30,21 @@ def _public_response(response: object) -> dict[str, object]:
     body = getattr(response, "body", None)
     if not isinstance(body, dict):
         return {}
-    return {
+    direct = {
         key: body[key]
         for key in ("seq", "ts")
         if key in body and isinstance(body[key], (str, int, float))
+    }
+    if direct:
+        return direct
+    messages = body.get("messages")
+    if not isinstance(messages, list) or not messages or not isinstance(messages[-1], dict):
+        return {}
+    latest = messages[-1]
+    return {
+        key: latest[key]
+        for key in ("seq", "ts")
+        if key in latest and isinstance(latest[key], (str, int, float))
     }
 
 

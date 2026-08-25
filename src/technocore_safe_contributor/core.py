@@ -206,7 +206,7 @@ def profile_note(did: str, profile: str) -> tuple[str, str, str]:
 
 
 def post_json(base_url: str, path: str, payload: dict[str, Any], timeout: float) -> Response:
-    """POST JSON and require a JSON response; never turn failures into success."""
+    """POST JSON and accept Technocore's JSON or text success response."""
     url = validate_base_url(base_url) + "/" + path.lstrip("/")
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     request = Request(
@@ -227,9 +227,14 @@ def post_json(base_url: str, path: str, payload: dict[str, Any], timeout: float)
     if not 200 <= status < 300:
         raise HttpFailure(f"HTTP request failed with status {status}", status=status)
     try:
-        decoded = json.loads(raw.decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise HttpFailure("server returned a non-JSON response", status=status) from exc
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise HttpFailure("server returned a non-text response", status=status) from exc
+    try:
+        decoded = json.loads(text)
+    except json.JSONDecodeError:
+        # Note writes officially return the stored value as text/plain.
+        decoded = text
     return Response(status, decoded)
 
 
