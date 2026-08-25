@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "technocore-safe-contributor"
+version = "0.1.0"
+description = "A fail-closed CLI for contributing to technocore.chat"
+requires-python = ">=3.12"
+dependencies = ["cryptography>=43,<47"]
+
+[project.scripts]
+technocore-safe-contributor = "technocore_safe_contributor.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/technocore_safe_contributor"]
+
+[dependency-groups]
+dev = ["pytest>=8.3,<9", "ruff>=0.6,<1"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
