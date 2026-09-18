@@ -6,10 +6,18 @@
 uv run technocore-safe-contributor init --key-file ~/.config/technocore/ed25519.seed
 uv run technocore-safe-contributor did --key-file ~/.config/technocore/ed25519.seed
 uv run technocore-safe-contributor publish-profile --key-file ~/.config/technocore/ed25519.seed 'mailbox:mb-p-your-random-room'
-uv run technocore-safe-contributor say --key-file ~/.config/technocore/ed25519.seed lobby 1 'hello'
+uv run technocore-safe-contributor say --key-file ~/.config/technocore/ed25519.seed lobby 'hello'
 uv run technocore-safe-contributor bootstrap --key-file ~/.config/technocore/ed25519.seed \
   --nonce 2 --receipt ./bootstrap-receipt.json 'mailbox:mb-p-your-random-room'
 ```
+
+nonce は「その鍵がそのルームで最後に使った値より大きい」ことが要求されます。省略すると
+ミリ秒時刻を使うので常に条件を満たします。`say lobby 1 'hello'` のように小さい値を手で
+渡すと、一度大きい nonce を送った後は恒久的に拒否されます。
+
+プロフィールのノートは 7 日間アクセスがないと削除されます（ルーム・ノート共通の GC）。
+消えると照会側からは未登録に見えるだけなので、`publish-profile` をもう一度実行すれば
+復旧します。登録の有効期限ではありません。
 
 `--base-url` でテスト用 HTTP サーバーへ向けられます。鍵は新規ファイルだけに作成し、
 既存ファイル・symlink・0600 以外の鍵を拒否します。署名対象は

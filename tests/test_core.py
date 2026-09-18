@@ -9,7 +9,7 @@ from urllib.request import Request
 import pytest
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
-from technocore_safe_contributor import cli
+from technocore_safe_contributor import cli, core
 from technocore_safe_contributor.core import (
     ContributorError,
     Response,
@@ -125,6 +125,94 @@ def test_bootstrap_wires_public_did_signature_payload_to_receipt(
     assert saved["did"] == greeting["did"]
     assert saved["greeting"]["posted"] == {"seq": 42, "ts": "2026-08-25T00:00:00Z"}
     assert "seed" not in json.dumps(saved).lower()
+
+
+def test_bootstrap_records_a_receipt_when_the_greeting_fails_after_the_profile_landed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key_path = tmp_path / "seed"
+    receipt = tmp_path / "receipt.json"
+    init_key(key_path)
+
+    def fake_post(base: str, path: str, payload: dict[str, object], timeout: float) -> Response:
+        if path == "/r/lobby":
+            raise core.HttpFailure("POST /r/lobby failed with status 403", status=403)
+        return Response(200, "stored profile")
+
+    monkeypatch.setattr(cli, "post_json", fake_post)
+    args = cli.parser().parse_args(
+        [
+            "bootstrap",
+            "--key-file",
+            str(key_path),
+            "--base-url",
+            "http://test.invalid",
+            "--nonce",
+            "9",
+            "--receipt",
+            str(receipt),
+            "mailbox:mb-p-example",
+        ]
+    )
+    with pytest.raises(core.HttpFailure):
+        cli.run(args)
+    # The profile is already published; losing that fact makes a retry look like a fresh start.
+    saved = json.loads(receipt.read_text())
+    assert saved["profile_status"] == 200
+    assert saved["profile_path"].startswith("/kv/did-")
+    assert saved["greeting"]["status"] == 403
+    assert saved["greeting"]["nonce"] == "9"
+
+
+def _say(monkeypatch: pytest.MonkeyPatch, key_path: Path, *rest: str) -> dict[str, object]:
+    def fake_post(base: str, path: str, payload: dict[str, object], timeout: float) -> Response:
+        return Response(200, {"seq": 1, "ts": "2026-09-19T00:00:00Z"})
+
+    monkeypatch.setattr(cli, "post_json", fake_post)
+    args = cli.parser().parse_args(
+        ["say", "--key-file", str(key_path), "--base-url", "http://test.invalid", "lobby", *rest]
+    )
+    return cli.run(args)
+
+
+def test_say_without_a_nonce_outruns_an_earlier_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key_path = tmp_path / "seed"
+    init_key(key_path)
+    explicit = _say(monkeypatch, key_path, "7", "hello")
+    assert explicit["nonce"] == "7" and explicit["text"] == "hello"
+    auto = _say(monkeypatch, key_path, "hello")
+    # Technocore only accepts a nonce greater than the last one used in that room.
+    assert int(auto["nonce"]) > int(explicit["nonce"])
+    assert auto["text"] == "hello"
+
+
+def test_say_rejects_a_non_numeric_nonce_instead_of_posting_it_as_text(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    key_path = tmp_path / "seed"
+    init_key(key_path)
+    with pytest.raises(ContributorError):
+        _say(monkeypatch, key_path, "abc", "hello")
+
+
+def test_failure_names_the_request_but_not_the_server_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from urllib.error import HTTPError
+
+    from technocore_safe_contributor import core
+
+    def fake_open(request: Request, timeout: float):
+        raise HTTPError(request.full_url, 403, "Forbidden", {}, None)
+
+    monkeypatch.setattr(core, "urlopen", fake_open)
+    with pytest.raises(core.HttpFailure) as caught:
+        core.post_json("https://example.invalid", "/r/lobby", {"text": "x"}, 1.0)
+    assert caught.value.status == 403
+    assert "/r/lobby" in str(caught.value) and "403" in str(caught.value)
+    assert "Forbidden" not in str(caught.value)
 
 
 def test_post_json_requires_json_and_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> None:

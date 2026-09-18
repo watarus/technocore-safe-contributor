@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-import time
 from pathlib import Path
 
 from .core import (
@@ -13,9 +12,11 @@ from .core import (
     DEFAULT_KEY_FILE,
     DEFAULT_TIMEOUT,
     ContributorError,
+    HttpFailure,
     did_for_key,
     init_key,
     load_key,
+    next_nonce,
     post_json,
     profile_note,
     receipt_write,
@@ -48,6 +49,19 @@ def _public_response(response: object) -> dict[str, object]:
     }
 
 
+def _say_nonce_and_text(rest: list[str]) -> tuple[str, str]:
+    """Accept `room nonce text` or `room text`; an omitted nonce takes the clock.
+
+    Technocore requires a nonce greater than the last one this key used in that room,
+    so a hand-picked small number fails once any larger one has been sent.
+    """
+    if len(rest) == 1:
+        return next_nonce(), rest[0]
+    if len(rest) == 2:
+        return validate_nonce(rest[0]), rest[1]
+    raise ContributorError("say takes a room, an optional nonce, and exactly one text argument")
+
+
 def _common(parser: argparse.ArgumentParser) -> None:
     # SUPPRESS lets the same options work before or after the subcommand.
     parser.add_argument("--key-file", type=Path, default=argparse.SUPPRESS)
@@ -68,8 +82,7 @@ def parser() -> argparse.ArgumentParser:
     say = sub.add_parser("say", help="publish one signed lobby/room message")
     _common(say)
     say.add_argument("room")
-    say.add_argument("nonce")
-    say.add_argument("text")
+    say.add_argument("rest", nargs="+", metavar="[nonce] text")
     profile = sub.add_parser("publish-profile", help="publish a sharded DID profile note")
     _common(profile)
     profile.add_argument(
@@ -97,14 +110,15 @@ def run(args: argparse.Namespace) -> dict[str, object] | None:
         return None
     base_url = validate_base_url(args.base_url)
     if args.command == "say":
-        did, sig, clean = signed_say(key, args.room, args.nonce, args.text)
+        nonce, text = _say_nonce_and_text(args.rest)
+        did, sig, clean = signed_say(key, args.room, nonce, text)
         response = post_json(
             base_url,
             f"/r/{validate_name(args.room, 'room')}",
             {
                 "did": did,
                 "sig": sig,
-                "nonce": validate_nonce(args.nonce),
+                "nonce": nonce,
                 "text": clean,
             },
             args.timeout,
@@ -112,7 +126,7 @@ def run(args: argparse.Namespace) -> dict[str, object] | None:
         result = {
             "did": did,
             "room": args.room,
-            "nonce": args.nonce,
+            "nonce": nonce,
             "text": clean,
             "status": response.status,
             "posted": _public_response(response),
@@ -133,23 +147,46 @@ def run(args: argparse.Namespace) -> dict[str, object] | None:
         }
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return result
-    nonce = args.nonce or str(time.time_ns() // 1_000_000)
+    nonce = validate_nonce(args.nonce) if args.nonce else next_nonce()
     did, sig, greeting = signed_say(key, "lobby", nonce, args.greeting)
-    greeting_response = post_json(
-        base_url,
-        "/r/lobby",
-        {
-            "did": did,
-            "sig": sig,
-            "nonce": validate_nonce(nonce),
-            "text": greeting,
-        },
-        args.timeout,
-    )
-    result = {
+    published = {
         "base_url": base_url,
         "did": did,
         "profile_path": f"/kv/{namespace}/{note_key}",
+        "profile_status": response.status,
+        "profile_posted": _public_response(response),
+    }
+    try:
+        greeting_response = post_json(
+            base_url,
+            "/r/lobby",
+            {
+                "did": did,
+                "sig": sig,
+                "nonce": nonce,
+                "text": greeting,
+            },
+            args.timeout,
+        )
+    except HttpFailure as exc:
+        # The profile write already landed. Record it so a retry is not mistaken for a
+        # fresh start, and so the spent nonce is visible; the message carries no server body.
+        receipt_write(
+            args.receipt,
+            {
+                **published,
+                "greeting": {
+                    "room": "lobby",
+                    "nonce": nonce,
+                    "text": greeting,
+                    "status": exc.status,
+                    "error": str(exc),
+                },
+            },
+        )
+        raise
+    result = {
+        **published,
         "greeting": {
             "room": "lobby",
             "nonce": nonce,
@@ -157,8 +194,6 @@ def run(args: argparse.Namespace) -> dict[str, object] | None:
             "status": greeting_response.status,
             "posted": _public_response(greeting_response),
         },
-        "profile_status": response.status,
-        "profile_posted": _public_response(response),
     }
     receipt_write(args.receipt, result)
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))

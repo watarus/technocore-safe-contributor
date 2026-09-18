@@ -10,6 +10,7 @@ import re
 import secrets
 import stat
 import tempfile
+import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,6 +74,11 @@ def validate_nonce(value: str) -> str:
     if not isinstance(value, str) or not NONCE_RE.fullmatch(value):
         raise ContributorError("nonce must contain 1-19 ASCII digits")
     return value
+
+
+def next_nonce() -> str:
+    """A nonce must exceed the last one this key used in that room; the clock always does."""
+    return str(time.time_ns() // 1_000_000)
 
 
 def validate_base_url(value: str) -> str:
@@ -207,7 +213,8 @@ def profile_note(did: str, profile: str) -> tuple[str, str, str]:
 
 def post_json(base_url: str, path: str, payload: dict[str, Any], timeout: float) -> Response:
     """POST JSON and accept Technocore's JSON or text success response."""
-    url = validate_base_url(base_url) + "/" + path.lstrip("/")
+    path = "/" + path.lstrip("/")
+    url = validate_base_url(base_url) + path
     body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     request = Request(
         url,
@@ -220,16 +227,17 @@ def post_json(base_url: str, path: str, payload: dict[str, Any], timeout: float)
             raw = response.read()
             status = int(response.status)
     except HTTPError as exc:
-        # Do not print server bodies: they can contain attacker-controlled content.
-        raise HttpFailure(f"HTTP request failed with status {exc.code}", status=exc.code) from exc
+        # Name the request so a caller can tell which write failed, but never echo the
+        # server body: it can contain attacker-controlled content.
+        raise HttpFailure(f"POST {path} failed with status {exc.code}", status=exc.code) from exc
     except (URLError, TimeoutError, OSError) as exc:
-        raise HttpFailure("HTTP request failed") from exc
+        raise HttpFailure(f"POST {path} failed before a status was returned") from exc
     if not 200 <= status < 300:
-        raise HttpFailure(f"HTTP request failed with status {status}", status=status)
+        raise HttpFailure(f"POST {path} failed with status {status}", status=status)
     try:
         text = raw.decode("utf-8")
     except UnicodeDecodeError as exc:
-        raise HttpFailure("server returned a non-text response", status=status) from exc
+        raise HttpFailure(f"POST {path} returned a non-text response", status=status) from exc
     try:
         decoded = json.loads(text)
     except json.JSONDecodeError:
