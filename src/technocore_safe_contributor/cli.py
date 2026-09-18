@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -26,9 +27,19 @@ from .core import (
     validate_nonce,
 )
 
+# A room write answers with a text dump whose message lines open with the server's seq
+# and timestamp. Anchoring to the line start keeps message text from forging a later one.
+TEXT_MESSAGE_RE = re.compile(r"^\[(\d{1,19})\]\s+(\S{1,64})\s", re.MULTILINE)
+
 
 def _public_response(response: object) -> dict[str, object]:
     body = getattr(response, "body", None)
+    if isinstance(body, str):
+        lines = TEXT_MESSAGE_RE.findall(body)
+        if not lines:
+            return {}
+        seq, ts = lines[-1]
+        return {"seq": int(seq), "ts": ts}
     if not isinstance(body, dict):
         return {}
     direct = {
